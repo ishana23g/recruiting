@@ -26,6 +26,7 @@ Here are some suggestions to get you thinking:
 - Revamp the UI/UX with cool visualizations and interactivity
 - Live-stream the simulation
 - Show off your best creative work with a redesign
+- Elegantly manage many agents
 
 #### Backend
 - Add unique patterns of user engagement
@@ -36,6 +37,8 @@ Here are some suggestions to get you thinking:
 
 #### DevOps
 - Improve observability
+- Implement disaster recovery
+- Harden the application
 
 #### Modeling & Simulation
 - Improve the numerical stability of the simulation functions
