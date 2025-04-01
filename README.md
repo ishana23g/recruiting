@@ -23,10 +23,10 @@ Included in this directory is a tiny mockup of Sedaro's system. Though it techni
 Here are some suggestions to get you thinking:
 
 #### Frontend/full-stack
-- Revamp the UI/UX with cool visualizations and interactivity
-- Live-stream the simulation
-- Show off your best creative work with a redesign
-- Elegantly manage many agents
+- Improve interactivity, for example live-streaming the simulation and allowing users to control the playback speed during the simulation
+- Improve alignment with accessibility standards
+- Elegantly support creating and managing many agents
+- Support running a series of simulations with varying parameters and displaying the results
 
 #### Backend
 - Add unique patterns of user engagement
