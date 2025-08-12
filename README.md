@@ -10,12 +10,16 @@ Submissions are evaluated on whether they are job-relevant, meet the title level
 Please submit a `.zip` file including:
 - The **code** (excluding temporary or .gitignored files and directories, such as `__pycache__`, `node_modules`, `target`, or any local virtual environments)
 - **Instructions** for setting up and running your solution
-- **Screenshots or a video** of your solution in action
+- **Screenshots or a video** of your solution in action (we love to see videos 🙌)
 - A **write-up** explaining your changes and why you made them
 
 If you end up getting to a solution that you aren't happy with or that is a dead end, document why and we will call that good enough. A write-up of why a solution is insufficient and how you might approach it differently often tells us what we need to know.
 
 Once you have completed your solution, email it to `kacie.neurohr@sedaro.com` and the other email(s) listed in the original instructions. To avoid your submission being blocked by our mail server, we recommend sharing the `.zip` file using a Google Drive link (or similar sharing service).
+
+## Forking Policy
+
+**We are happy for you to fork this repository but we ask that you keep the fork private so it remains hidden from other candidates.**
 
 ## Choosing a Project
 Included in this directory is a tiny mockup of Sedaro's system. Though it technically comprises a full-stack app, there are _many_ areas in which it could be improved. Review the files that make up Sedaro Nano to figure out how it works, then choose a project that shows off your unique strengths. The prompt is intentionally open-ended to allow creative solutions.
