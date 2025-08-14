@@ -40,9 +40,10 @@ Here are some suggestions to get you thinking:
 - Incorporate computational optimizations (e.g. linear programming)
 
 #### DevOps
-- Improve observability
-- Implement disaster recovery
-- Harden the application
+- Integrate observability tooling and use it to performance profile the application
+- Improve the availability of the application using clustering and infrastructure as code
+- Write the "supreme pizza" version of a CI/CD pipeline
+- Analyze and minimize the attack surface of the application without constraining development
 
 #### Modeling & Simulation
 - Improve the numerical stability of the simulation functions
