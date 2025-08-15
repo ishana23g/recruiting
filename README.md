@@ -45,6 +45,12 @@ Here are some suggestions to get you thinking:
 - Write the "supreme pizza" version of a CI/CD pipeline
 - Analyze and minimize the attack surface of the application without constraining development
 
+#### Workflows
+- Set up background jobs to preprocess data
+- Integrate observability tooling and use it to performance profile the application
+- Improve the availability of the application using clustering and infrastructure as code
+- Create a more scalable storage solution than a JSON string in one DB row
+
 #### Modeling & Simulation
 - Improve the numerical stability of the simulation functions
 - Implement additional modeling and simulation scope
