@@ -9,8 +9,7 @@ import json
 import modsim
 from store import QRangeStore
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import numpy as np
+# from threading import Lock
 
 def parse_query(query):
     # NOTE: The query parser is invoked via a subprocess call to the Rust binary
@@ -51,6 +50,7 @@ class Simulator:
         self.times = {agentId: state["time"] for agentId, state in init.items()}
         self.sim_graph = {}
         agents_source = agents_config if agents_config is not None else modsim.agents
+        # self._commit_lock = Lock()
         for (agentId, sms) in agents_source.items():
             agent = []
             for sm in sms:
@@ -58,7 +58,7 @@ class Simulator:
                 produced = parse_query(sm["produced"])
                 func = sm["function"]
                 agent.append({"func": func, "consumed": consumed, "produced": produced})
-            self.sim_graph[agentId] = agent
+            self.sim_graph[agentId] = agent        
 
     def read(self, t):
         try:
@@ -197,11 +197,13 @@ class Simulator:
                 if set(universe) != agent_keys:
                     continue
 
-                # Compute each agent's next state against the same snapshot
-                results = list(pool.map(lambda x: (x, self.step(x, universe)), agent_ids))
-
-                # Commit results atomically
-                for agentId, newState in results:
+                def worker(agentId):
+                    newState = self.step(agentId, universe)
                     new_time = newState[agentId]["time"]
+                    # # Thread-safe commit; drop the lock if QRangeStore is thread-safe
+                    # with self._commit_lock:
                     self.store[t0, new_time] = newState
                     self.times[agentId] = new_time
+
+                # Compute and save in parallel
+                list(pool.map(worker, agent_ids))
