@@ -5,10 +5,9 @@ from operator import __or__
 import subprocess
 import json
 
-from modsim import agents
+# from modsim import agents
+import modsim
 from store import QRangeStore
-
-import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def parse_query(query):
@@ -114,14 +113,15 @@ class Simulator:
         init (dict): The initial state of the universe.
     """
 
-    def __init__(self, store: QRangeStore, init: dict):
+    def __init__(self, store: QRangeStore, init: dict, agents_config: dict | None = None):
         # NOTE: Creating a Simulator object does all the simulation "building"
         self.store = store
         store[-999999999, 0] = init
         self.init = init
         self.times = {agentId: state["time"] for agentId, state in init.items()}
         self.sim_graph = {}
-        for (agentId, sms) in agents.items():
+        agents_source = agents_config if agents_config is not None else modsim.agents
+        for (agentId, sms) in agents_source.items():
             agent = []
             for sm in sms:
                 consumed = parse_query(sm["consumed"])["content"]

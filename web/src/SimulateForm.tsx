@@ -38,10 +38,34 @@ interface FormData {
 const SimulateForm: React.FC = () => {
   const navigate = useNavigate();
 
+  const [n, setN] = useState<number>(50);
+  const [iterations, setIterations] = useState<number>(500);
+  const [seed, setSeed] = useState<string>('42');
+
   const [formData, setFormData] = useState<FormData>({
     Body1: { position: {x: -0.73, y: 0, z: 0}, velocity: {x: 0, y: -0.0015, z: 0}, mass: 1 },
     Body2: { position: {x: 60.34, y: 0, z: 0}, velocity: {x: 0, y: 0.13, z: 0}, mass: 0.0123 },
   });
+
+  const runRandom = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({
+        n: String(n),
+        iterations: String(iterations),
+      });
+      if (seed !== '') params.set('seed', seed);
+      const resp = await fetch(`http://localhost:8000/simulation?${params.toString()}`, { method: 'GET' })
+      .catch((err) => console.error('random sim request failed:', err));
+      if (!resp || !resp.ok) {
+        throw new Error('Network response was not ok');
+      }
+      // Immediately go to the results page
+      window.location.assign('http://localhost:3030/simulation');
+    } catch (error) {
+      console.error('Error:', error);
+    }
+
+    }, [n, iterations, seed]);
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -90,6 +114,44 @@ const SimulateForm: React.FC = () => {
           Run a Simulation
         </Heading>
         <Link to={Routes.SIMULATION}>View previous simulation</Link>
+        <Separator size="4" my="5" />
+        {/* Quick random N-body section */}
+        <Heading as="h3" size="3" weight="bold">Random N-bodies</Heading>
+        <Form>
+          <FormField name="random.n">
+            <FormLabel htmlFor="random.n">N-bodies</FormLabel>
+            <TextField.Root
+              type="number"
+              id="random.n"
+              value={n}
+              onChange={(e) => setN(parseInt(e.target.value || '0', 10))}
+              placeholder="N (bodies)"
+            />
+          </FormField>
+          <FormField name="random.iterations">
+            <FormLabel htmlFor="random.iterations">Time steps</FormLabel>
+            <TextField.Root
+              type="number"
+              id="random.iterations"
+              value={iterations}
+              onChange={(e) => setIterations(parseInt(e.target.value || '0', 10))}
+              placeholder="Iterations"
+            />
+          </FormField>
+          <FormField name="random.seed">
+            <FormLabel htmlFor="random.seed">Seed (optional)</FormLabel>
+            <TextField.Root
+              type="number"
+              id="random.seed"
+              value={seed}
+              onChange={(e) => setSeed(e.target.value)}
+              placeholder="e.g. 42"
+            />
+          </FormField>
+          <Flex justify="center" m="3">
+            <Button onClick={runRandom}>Run random</Button>
+          </Flex>
+        </Form>
         <Separator size="4" my="5" />
         <Form onSubmit={handleSubmit}>
           {/* 

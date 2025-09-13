@@ -10,6 +10,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from store import QRangeStore
 import logging
 from datetime import datetime
+from modsim import build_n_body_agents, random_initial_state
+from flask import jsonify
 
 class Base(DeclarativeBase):
     pass
@@ -40,6 +42,9 @@ with app.app_context():
 
 ############################## API Endpoints ##############################
 
+@app.get("/debug/routes")
+def debug_routes():
+    return jsonify({rule.rule: sorted(list(rule.methods)) for rule in app.url_map.iter_rules()})
 
 @app.get("/")
 def health():
@@ -48,6 +53,45 @@ def health():
 
 @app.get("/simulation")
 def get_data():
+    # Optional: kick off a random N-body sim when query params are provided
+    if request.args.get("n"):
+        try:
+            n = int(request.args.get("n", 50))
+            iterations = int(request.args.get("iterations", 500))
+            space_radius = float(request.args.get("space_radius", 100.0))
+            speed_sigma = float(request.args.get("speed_sigma", 0.05))
+            mass_min = float(request.args.get("mass_min", 0.1))
+            mass_max = float(request.args.get("mass_max", 1.0))
+            seed_param = request.args.get("seed")
+            seed = int(seed_param) if seed_param not in (None, "", "None") else None
+
+            init = random_initial_state(
+                n=n,
+                space_radius=space_radius,
+                speed_sigma=speed_sigma,
+                mass_range=(mass_min, mass_max),
+                seed=seed,
+            )
+            agents_cfg = build_n_body_agents(n)
+
+            t = datetime.now()
+            store = QRangeStore()
+            simulator = Simulator(store=store, init=init, agents_config=agents_cfg)
+            logging.info(f"[random via GET /simulation] Build: {datetime.now() - t}")
+
+            t = datetime.now()
+            simulator.simulate(iterations=iterations)
+            logging.info(f"[random via GET /simulation] Sim: {datetime.now() - t}")
+
+            simulation = Simulation(data=json.dumps(store.store))
+            db.session.add(simulation)
+            db.session.commit()
+
+            return store.store
+        except Exception as e:
+            logging.exception("Failed random simulation via GET /simulation")
+            return {"error": str(e)}, 400
+
     # Get most recent simulation from database
     simulation: Simulation = Simulation.query.order_by(Simulation.id.desc()).first()
     return simulation.data if simulation else []
@@ -84,3 +128,46 @@ def simulate():
     db.session.commit()
 
     return store.store
+
+
+@app.route("/simulation/random", methods=["GET", "POST"])
+def simulate_random():
+    logging.info("simulate_random: received %s with args=%s json=%s", request.method, dict(request.args), request.json)
+    try:
+        payload = request.json or request.args or {}
+        n = int(payload.get("n", 50))
+        iterations = int(payload.get("iterations", 500))
+        space_radius = float(payload.get("space_radius", 100.0))
+        speed_sigma = float(payload.get("speed_sigma", 0.05))
+        mass_min = float(payload.get("mass_min", 0.1))
+        mass_max = float(payload.get("mass_max", 1.0))
+        seed_raw = payload.get("seed")
+        seed = int(seed_raw) if seed_raw not in (None, "", "None") else None
+
+        init = random_initial_state(
+            n=n,
+            space_radius=space_radius,
+            speed_sigma=speed_sigma,
+            mass_range=(mass_min, mass_max),
+            seed=seed,
+        )
+        agents_cfg = build_n_body_agents(n)
+
+        t = datetime.now()
+        store = QRangeStore()
+        simulator = Simulator(store=store, init=init, agents_config=agents_cfg)
+        logging.info(f"[random] Time to Build: {datetime.now() - t}")
+
+        t = datetime.now()
+        simulator.simulate(iterations=iterations)
+        logging.info(f"[random] Time to Simulate: {datetime.now() - t}")
+
+        simulation = Simulation(data=json.dumps(store.store))
+        db.session.add(simulation)
+        db.session.commit()
+
+        return store.store
+    
+    except Exception as e:
+        logging.exception("simulate_random failed")
+        return jsonify({"error": str(e)}), 400
