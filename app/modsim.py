@@ -40,27 +40,167 @@ def propagate_position(time_step, position, velocity):
 
     return {'x': r_self[0], 'y': r_self[1], 'z': r_self[2]}
 
-# -------- New: helpers to generate many bodies dynamically --------
-
-def random_initial_state(n: int, space_radius: float = 100.0, speed_sigma: float = 0.05,
-                         mass_range=(0.1, 1.0), seed=None):
+# -------- Improved: helpers to generate many bodies with orbitalized starts --------
+def random_initial_state(
+    n: int,
+    space_radius: float = 20.0,
+    speed_sigma: float = 0.02,
+    mass_range=(0.5, 1.5),
+    seed=None,
+    heavy_center: bool = True,
+    center_mass_factor: float = 50.0,
+    center_position=(0.0, 0.0, 0.0),
+    min_radius: float = 1.0,
+    profile: str = "sphere",        # "disc" or "sphere"
+    equal_masses: bool = False,      # set True to make all bodies similar in mass
+    velocity_noise: float = 0.05,   # noise as a fraction of circular speed
+    orbitalize: bool = True,        # set tangential velocities for near-circular orbits
+    disc_thickness: float = 0.2,    # stddev of z for disc profile
+    zero_total_momentum: bool = True,
+):
     """
-    Generate N randomized bodies with positions ~ N(0, space_radius) and velocities ~ N(0, speed_sigma).
+    Generate N bodies with options for more interesting orbits.
+    - If heavy_center=True: Body1 is a massive central body at center_position.
+      Others are placed in a disc/sphere and given near-circular velocities.
+    - If heavy_center=False: bodies are placed around the origin and velocities
+      swirl around the center of mass.
+    - equal_masses=True makes bodies closer in weight (often yields cleaner dynamics).
     """
     if seed is not None:
-        np.random.seed(seed)
-    init = {}
-    masses = np.random.uniform(mass_range[0], mass_range[1], size=n)
-    positions = np.random.normal(loc=0.0, scale=space_radius, size=(n, 3))
-    velocities = np.random.normal(loc=0.0, scale=speed_sigma, size=(n, 3))
+        np.random.seed(int(seed))
 
+    # Masses
+    if equal_masses:
+        m_val = float((mass_range[0] + mass_range[1]) * 0.5)
+        masses = np.full(n, m_val, dtype=float)
+    else:
+        masses = np.random.uniform(mass_range[0], mass_range[1], size=n).astype(float)
+
+    # Positions
+    positions = np.zeros((n, 3), dtype=float)
+    center = np.array(center_position, dtype=float)
+
+    def sample_positions(k):
+        if profile == "disc":
+            # Uniform in area: r from sqrt, theta uniform
+            r = np.sqrt(np.random.uniform(low=max(min_radius**2, 1e-6), high=space_radius**2, size=k))
+            theta = np.random.uniform(0, 2 * np.pi, size=k)
+            x = r * np.cos(theta)
+            y = r * np.sin(theta)
+            z = np.random.normal(loc=0.0, scale=disc_thickness, size=k)
+            return np.stack([x, y, z], axis=1)
+        else:  # "sphere"
+            # Uniform in volume
+            u = np.random.uniform(low=max(min_radius**3, 1e-6), high=space_radius**3, size=k)
+            r = np.cbrt(u)
+            # Random directions on sphere
+            v = np.random.normal(size=(k, 3))
+            v /= np.linalg.norm(v, axis=1)[:, None]
+            return r[:, None] * v
+
+    # Initialize velocities
+    velocities = np.zeros((n, 3), dtype=float)
+
+    if heavy_center and n >= 1:
+        # Central massive body
+        center_mass = max(mass_range) * float(center_mass_factor)
+        masses[0] = center_mass
+        positions[0] = center
+        velocities[0] = np.array([0.0, 0.0, 0.0], dtype=float)
+
+        # Other bodies: positions
+        if n > 1:
+            positions[1:] = center + sample_positions(n - 1)
+
+            if orbitalize:
+                # Give others near-circular tangential velocities around the center
+                for i in range(1, n):
+                    r_vec = positions[i] - center
+                    r = np.linalg.norm(r_vec)
+                    if r < 1e-9:
+                        continue
+                    r_hat = r_vec / r
+                    # Tangent direction: cross with a random vector
+                    a = np.random.normal(size=3)
+                    t = np.cross(r_hat, a)
+                    t_norm = np.linalg.norm(t)
+                    if t_norm < 1e-12:
+                        # Fallback orthogonal
+                        a = np.array([1.0, 0.0, 0.0])
+                        t = np.cross(r_hat, a)
+                        t_norm = np.linalg.norm(t)
+                    t_hat = t / t_norm
+                    v_circ = np.sqrt(center_mass / r)  # G=1
+                    dir_sign = 1.0 if np.random.rand() < 0.5 else -1.0
+                    v_vec = dir_sign * v_circ * t_hat
+                    # Add small noise
+                    v_vec += (velocity_noise * v_circ) * np.random.normal(size=3)
+                    velocities[i] = v_vec
+            else:
+                # Fallback: small random velocities
+                velocities[1:] = np.random.normal(loc=0.0, scale=speed_sigma, size=(n - 1, 3))
+
+        # Keep central mass anchored (optional small kick could be added if desired)
+        if zero_total_momentum and n > 1:
+            # Only remove momentum from the non-central bodies so center stays fixed
+            p_total = np.sum((masses[1:, None] * velocities[1:]), axis=0)
+            m_rest = np.sum(masses[1:])
+            if m_rest > 0:
+                v_shift = p_total / m_rest
+                velocities[1:] -= v_shift
+
+    else:
+        # No heavy center: distribute bodies around origin and swirl around center-of-mass
+        positions[:] = sample_positions(n)
+        com = np.average(positions, axis=0, weights=masses)
+        # Orbitalize around COM
+        if orbitalize:
+            M_tot = float(np.sum(masses))
+            for i in range(n):
+                r_vec = positions[i] - com
+                r = np.linalg.norm(r_vec)
+                if r < 1e-9:
+                    continue
+                r_hat = r_vec / r
+                a = np.random.normal(size=3)
+                t = np.cross(r_hat, a)
+                t_norm = np.linalg.norm(t)
+                if t_norm < 1e-12:
+                    a = np.array([1.0, 0.0, 0.0])
+                    t = np.cross(r_hat, a)
+                    t_norm = np.linalg.norm(t)
+                t_hat = t / t_norm
+                # Use total mass for a rough Keplerian-like swirl about COM
+                v_circ = np.sqrt(M_tot / r)
+                dir_sign = 1.0 if np.random.rand() < 0.5 else -1.0
+                v_vec = dir_sign * v_circ * t_hat
+                v_vec += (velocity_noise * v_circ) * np.random.normal(size=3)
+                velocities[i] = v_vec
+        else:
+            velocities[:] = np.random.normal(loc=0.0, scale=speed_sigma, size=(n, 3))
+
+        if zero_total_momentum:
+            p_total = np.sum((masses[:, None] * velocities), axis=0)
+            M_tot = np.sum(masses)
+            velocities -= p_total / M_tot
+
+    # Build init dict
+    init = {}
     for i in range(1, n + 1):
-        init[f'Body{i}'] = {
-            'timeStep': 0.01,
-            'time': 0.0,
-            'position': {'x': float(positions[i-1, 0]), 'y': float(positions[i-1, 1]), 'z': float(positions[i-1, 2])},
-            'velocity': {'x': float(velocities[i-1, 0]), 'y': float(velocities[i-1, 1]), 'z': float(velocities[i-1, 2])},
-            'mass': float(masses[i-1]),
+        init[f"Body{i}"] = {
+            "timeStep": 0.01,
+            "time": 0.0,
+            "position": {
+                "x": float(positions[i - 1, 0]),
+                "y": float(positions[i - 1, 1]),
+                "z": float(positions[i - 1, 2]),
+            },
+            "velocity": {
+                "x": float(velocities[i - 1, 0]),
+                "y": float(velocities[i - 1, 1]),
+                "z": float(velocities[i - 1, 2]),
+            },
+            "mass": float(masses[i - 1]),
         }
     return init
 

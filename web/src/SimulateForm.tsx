@@ -41,60 +41,99 @@ const SimulateForm: React.FC = () => {
   const [n, setN] = useState<number>(50);
   const [iterations, setIterations] = useState<number>(500);
   const [seed, setSeed] = useState<string>('42');
+  const [heavyCenter, setHeavyCenter] = useState<boolean>(true);
 
   const [formData, setFormData] = useState<FormData>({
     Body1: { position: {x: -0.73, y: 0, z: 0}, velocity: {x: 0, y: -0.0015, z: 0}, mass: 1 },
     Body2: { position: {x: 60.34, y: 0, z: 0}, velocity: {x: 0, y: 0.13, z: 0}, mass: 0.0123 },
   });
 
-  const runRandom = useCallback(async () => {
+  // const runRandom = useCallback(async () => {
+  //   try {
+  //     const params = new URLSearchParams({
+  //       n: String(n),
+  //       iterations: String(iterations),
+  //     });
+  //     if (seed !== '') params.set('seed', seed);
+
+  //     // Trigger the random sim (GET /simulation handles n, iterations, seed)
+  //     const response = await fetch(`http://localhost:8000/simulation?${params.toString()}`, {
+  //       method: 'GET',
+  //     });
+  //     if (!response.ok) {
+  //       throw new Error('Network response was not ok');
+  //     }
+
+  //     // Go to results page (same behavior as handleSubmit)
+  //     navigate(Routes.SIMULATION);
+  //   } catch (error) {
+  //     console.error('Error:', error);
+  //   }
+  // }, [n, iterations, seed, navigate]);
+
+  const runRandomWithWorkers = useCallback(async (workers: '1' | 'auto') => {
     try {
       const params = new URLSearchParams({
         n: String(n),
         iterations: String(iterations),
+        workers,
       });
       if (seed !== '') params.set('seed', seed);
-      const resp = await fetch(`http://localhost:8000/simulation?${params.toString()}`, { method: 'GET' })
-      .catch((err) => console.error('random sim request failed:', err));
-      if (!resp || !resp.ok) {
-        throw new Error('Network response was not ok');
-      }
-      // Immediately go to the results page
-      window.location.assign('http://localhost:3030/simulation');
+      if (heavyCenter) params.set('heavy_center', 'true');
+  
+      const response = await fetch(`http://localhost:8000/simulation/random?${params.toString()}`, {
+        method: 'GET',
+      });
+      if (!response.ok) throw new Error('Network response was not ok');
+      navigate(Routes.SIMULATION);
     } catch (error) {
       console.error('Error:', error);
     }
-
-    }, [n, iterations, seed]);
-
+  }, [n, iterations, seed, heavyCenter, navigate]);
+    
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     let newValue: FormValue = value === '' ? '' : parseFloat(value);
     setFormData((prev) => _.set({ ...prev }, name, newValue));
   }, []);
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      try {
-        const response = await fetch('http://localhost:8000/simulation', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(formData),
-        });
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        navigate(Routes.SIMULATION);
-      } catch (error) {
-        console.error('Error:', error);
-      }
-    },
-    [formData]
-  );
+  // const handleSubmit = useCallback(
+  //   async (e: React.FormEvent) => {
+  //     e.preventDefault();
+  //     try {
+  //       const response = await fetch('http://localhost:8000/simulation', {
+  //         method: 'POST',
+  //         headers: {
+  //           'Content-Type': 'application/json',
+  //         },
+  //         body: JSON.stringify(formData),
+  //       });
+  //       if (!response.ok) {
+  //         throw new Error('Network response was not ok');
+  //       }
+  //       navigate(Routes.SIMULATION);
+  //     } catch (error) {
+  //       console.error('Error:', error);
+  //     }
+  //   },
+  //   [formData]
+  // );
 
+  const submitRegular = useCallback(async (workers: '1' | 'auto') => {
+    try {
+      const url = `http://localhost:8000/simulation?workers=${workers}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      });
+      if (!response.ok) throw new Error('Network response was not ok');
+      navigate(Routes.SIMULATION);
+    } catch (error) {
+      console.error('Error:', error);
+    }
+  }, [formData, navigate]);
+  
   return (
     <div
       style={{
@@ -124,7 +163,7 @@ const SimulateForm: React.FC = () => {
               type="number"
               id="random.n"
               value={n}
-              onChange={(e) => setN(parseInt(e.target.value || '0', 10))}
+              onChange={(e: { target: { value: any; }; }) => setN(parseInt(e.target.value || '0', 10))}
               placeholder="N (bodies)"
             />
           </FormField>
@@ -148,12 +187,23 @@ const SimulateForm: React.FC = () => {
               placeholder="e.g. 42"
             />
           </FormField>
-          <Flex justify="center" m="3">
-            <Button onClick={runRandom}>Run random</Button>
+          <FormField name="random.heavyCenter">
+          <FormLabel htmlFor="random.heavyCenter">Central massive body</FormLabel>
+          <input
+            id="random.heavyCenter"
+            type="checkbox"
+            checked={heavyCenter}
+            onChange={(e) => setHeavyCenter(e.target.checked)}
+            style={{ marginTop: 8 }}
+          />
+        </FormField>
+          <Flex justify="center" gap="3" m="3" wrap="wrap">
+            <Button type="button" onClick={() => runRandomWithWorkers('1')}>Run random (single-thread)</Button>
+            <Button type="button" onClick={() => runRandomWithWorkers('auto')}>Run random (parallel)</Button>
           </Flex>
         </Form>
         <Separator size="4" my="5" />
-        <Form onSubmit={handleSubmit}>
+        <Form>
           {/* 
             *********************************
             Body1
@@ -326,7 +376,8 @@ const SimulateForm: React.FC = () => {
             />
           </FormField>
           <Flex justify="center" m="5">
-            <Button type="submit">Submit</Button>
+          <Button type="button" onClick={() => submitRegular('1')} mr="2">Submit (single-thread)</Button>
+          <Button type="button" onClick={() => submitRegular('auto')}>Submit (parallel)</Button>
           </Flex>
         </Form>
       </Card>

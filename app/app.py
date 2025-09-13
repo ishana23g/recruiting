@@ -50,61 +50,64 @@ def debug_routes():
 def health():
     return "<p>Sedaro Nano API - running!</p>"
 
+def _parse_bool(val) -> bool:
+    if val is None:
+        return False
+    return str(val).lower() in ("1", "true", "yes", "on")
 
 @app.get("/simulation")
 def get_data():
-    # Optional: kick off a random N-body sim when query params are provided
-    if request.args.get("n"):
-        try:
-            n = int(request.args.get("n", 50))
-            iterations = int(request.args.get("iterations", 500))
-            space_radius = float(request.args.get("space_radius", 100.0))
-            speed_sigma = float(request.args.get("speed_sigma", 0.05))
-            mass_min = float(request.args.get("mass_min", 0.1))
-            mass_max = float(request.args.get("mass_max", 1.0))
-            seed_param = request.args.get("seed")
-            seed = int(seed_param) if seed_param not in (None, "", "None") else None
-
-            init = random_initial_state(
-                n=n,
-                space_radius=space_radius,
-                speed_sigma=speed_sigma,
-                mass_range=(mass_min, mass_max),
-                seed=seed,
-            )
-            agents_cfg = build_n_body_agents(n)
-
-            t = datetime.now()
-            store = QRangeStore()
-            simulator = Simulator(store=store, init=init, agents_config=agents_cfg)
-            logging.info(f"[random via GET /simulation] Build: {datetime.now() - t}")
-
-            t = datetime.now()
-            simulator.simulate(iterations=iterations)
-            logging.info(f"[random via GET /simulation] Sim: {datetime.now() - t}")
-
-            simulation = Simulation(data=json.dumps(store.store))
-            db.session.add(simulation)
-            db.session.commit()
-
-            return store.store
-        except Exception as e:
-            logging.exception("Failed random simulation via GET /simulation")
-            return {"error": str(e)}, 400
-
-    # Get most recent simulation from database
+    # Only return the most recent simulation
     simulation: Simulation = Simulation.query.order_by(Simulation.id.desc()).first()
-    return simulation.data if simulation else []
+    try:
+        return jsonify(json.loads(simulation.data)) if simulation else jsonify([])
+    except Exception:
+        return jsonify(simulation.data if simulation else [])
 
+# New: run a random N-body sim, then return results
+@app.get("/simulation/random")
+def simulate_random():
+    try:
+        n = int(request.args.get("n", 50))
+        iterations = int(request.args.get("iterations", 500))
+        seed_param = request.args.get("seed")
+        seed = int(seed_param) if seed_param not in (None, "", "None") else None
+        workers_raw = request.args.get("workers")
+        num_workers = None if workers_raw in (None, "", "auto", "Auto", "None") else int(workers_raw)
+        heavy_center = _parse_bool(request.args.get("heavy_center"))
+
+        init = random_initial_state(
+            n=n,
+            seed=seed,
+            heavy_center=heavy_center
+        )
+        agents_cfg = build_n_body_agents(n)
+
+        t = datetime.now()
+        store = QRangeStore()
+        simulator = Simulator(store=store, init=init, agents_config=agents_cfg)
+        logging.info(f"[GET /simulation/random] Build: {datetime.now() - t}")
+
+        t = datetime.now()
+        if num_workers == 1:
+            logging.info("[random] single-threaded")
+            simulator.simulate(iterations=iterations)
+        else:
+            logging.info("[random] parallel")
+            simulator.simulate_parallel(iterations=iterations, num_workers=num_workers)
+        logging.info(f"[GET /simulation/random] Sim: {datetime.now() - t}")
+
+        simulation = Simulation(data=json.dumps(store.store))
+        db.session.add(simulation)
+        db.session.commit()
+
+        return jsonify(store.store)
+    except Exception as e:
+        logging.exception("Failed random simulation via GET /simulation/random")
+        return jsonify({"error": str(e)}), 400
 
 @app.post("/simulation")
 def simulate():
-    # Get data from request in this form
-    # init = {
-    #     "Body1": {"x": 0, "y": 0.1, "vx": 0.1, "vy": 0},
-    #     "Body2": {"x": 0, "y": 1, "vx": 1, "vy": 0},
-    # }
-
     # Define time and timeStep for each agent
     init: dict = request.json
     for key in init.keys():
@@ -119,7 +122,17 @@ def simulate():
 
     # Run simulation
     t = datetime.now()
-    simulator.simulate()
+    workers_raw = request.args.get("workers")
+    num_workers = None if workers_raw in (None, "", "auto", "Auto", "None") else int(workers_raw)
+    iterations_raw = request.args.get("iterations")
+    iterations = int(iterations_raw) if iterations_raw not in (None, "", "None") else 500
+
+    if num_workers == 1:
+        logging.info("[regular] single-threaded")
+        simulator.simulate(iterations=iterations)
+    else:
+        logging.info("[regular] parallel")
+        simulator.simulate_parallel(iterations=iterations, num_workers=num_workers)
     logging.info(f"Time to Simulate: {datetime.now() - t}")
 
     # Save data to database
@@ -127,47 +140,4 @@ def simulate():
     db.session.add(simulation)
     db.session.commit()
 
-    return store.store
-
-
-@app.route("/simulation/random", methods=["GET", "POST"])
-def simulate_random():
-    logging.info("simulate_random: received %s with args=%s json=%s", request.method, dict(request.args), request.json)
-    try:
-        payload = request.json or request.args or {}
-        n = int(payload.get("n", 50))
-        iterations = int(payload.get("iterations", 500))
-        space_radius = float(payload.get("space_radius", 100.0))
-        speed_sigma = float(payload.get("speed_sigma", 0.05))
-        mass_min = float(payload.get("mass_min", 0.1))
-        mass_max = float(payload.get("mass_max", 1.0))
-        seed_raw = payload.get("seed")
-        seed = int(seed_raw) if seed_raw not in (None, "", "None") else None
-
-        init = random_initial_state(
-            n=n,
-            space_radius=space_radius,
-            speed_sigma=speed_sigma,
-            mass_range=(mass_min, mass_max),
-            seed=seed,
-        )
-        agents_cfg = build_n_body_agents(n)
-
-        t = datetime.now()
-        store = QRangeStore()
-        simulator = Simulator(store=store, init=init, agents_config=agents_cfg)
-        logging.info(f"[random] Time to Build: {datetime.now() - t}")
-
-        t = datetime.now()
-        simulator.simulate(iterations=iterations)
-        logging.info(f"[random] Time to Simulate: {datetime.now() - t}")
-
-        simulation = Simulation(data=json.dumps(store.store))
-        db.session.add(simulation)
-        db.session.commit()
-
-        return store.store
-    
-    except Exception as e:
-        logging.exception("simulate_random failed")
-        return jsonify({"error": str(e)}), 400
+    return jsonify(store.store)

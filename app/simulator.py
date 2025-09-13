@@ -8,7 +8,9 @@ import json
 # from modsim import agents
 import modsim
 from store import QRangeStore
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
 
 def parse_query(query):
     # NOTE: The query parser is invoked via a subprocess call to the Rust binary
@@ -18,78 +20,6 @@ def parse_query(query):
         raise Exception(f"Parsing query failed: {stderr}")
     return json.loads(stdout)
 
-
-# Place this function at the top-level of your simulator.py file (outside the class)
-def run_agent_task(agentId, universe, sim_graph_agent, init_agent_keys):
-    """
-    A stateless worker function that simulates one agent for one step.
-    It receives all necessary data and has no access to the Simulator instance.
-    This is the key to achieving low-overhead parallelization.
-    """
-    newState = {}
-
-    # --- Re-implementation of the find/put logic ---
-    def _find(current_agent_id, query, universe_state, new_state_dict, prev=False):
-        match query["kind"]:
-            case "Base":
-                if prev: return universe_state[current_agent_id][query["content"]]
-                agentState = new_state_dict.get(current_agent_id)
-                return agentState.get(query["content"]) if agentState else None
-            case "Prev": return _find(current_agent_id, query["content"], universe_state, new_state_dict, prev=True)
-            case "Root": return new_state_dict if not prev else universe_state[current_agent_id]
-            case "Agent": return universe_state[query["content"]]
-            case "Access":
-                base = _find(current_agent_id, query["content"]["base"], universe_state, new_state_dict, prev)
-                return base.get(query["content"]["field"]) if base else None
-            case "Tuple":
-                res = [_find(current_agent_id, q, universe_state, new_state_dict, prev) for q in query["content"]]
-                return res if all(x is not None for x in res) else None
-            case _: return None
-
-    def _put(current_agent_id, query, universe_state, new_state_dict, data):
-        match query["kind"]:
-            case "Base":
-                if current_agent_id not in new_state_dict:
-                    new_state_dict[current_agent_id] = {}
-                new_state_dict[current_agent_id][query["content"]] = data
-            case "Access":
-                baseQuery = query["content"]["base"]
-                base = _find(current_agent_id, baseQuery, universe_state, new_state_dict)
-                if base is None:
-                    base = {}
-                    _put(current_agent_id, baseQuery, universe_state, new_state_dict, base)
-                base[query["content"]["field"]] = data
-            case _:
-                # Simplified for clarity, add other cases if needed
-                raise Exception(f"Production for query kind {query['kind']} is not supported in worker.")
-
-    # --- Re-implementation of the step/run_sm logic ---
-    sms = [(agentId, sm) for sm in sim_graph_agent]
-    while sms:
-        next_sms = []
-        progress_made = False
-        for sm_agent_id, sm in sms:
-            inputs = []
-            # This logic is from run_sm
-            for q in sm["consumed"]:
-                found = _find(sm_agent_id, q, universe, newState)
-                if found is None:
-                    break
-                inputs.append(found)
-            
-            # If all inputs were found, run the function
-            if len(inputs) == len(sm["consumed"]):
-                res = sm["func"](*inputs)
-                _put(sm_agent_id, sm["produced"], universe, newState, res)
-                progress_made = True
-            else:
-                next_sms.append((sm_agent_id, sm))
-        
-        if not progress_made and next_sms:
-             raise Exception(f"No progress made for agent {agentId}")
-        sms = next_sms
-
-    return newState
 
 class Simulator:
     """
@@ -230,58 +160,48 @@ class Simulator:
             case "Tuple":
                 raise Exception(f"Tuple production not yet implemented")
 
-    # def simulate(self, iterations: int = 500):
-    #     """Simulate the universe for a given number of iterations."""
-    #     for _ in range(iterations):
-    #         for agentId in self.init:
-    #             t = self.times[agentId]
-    #             universe = self.read(t - 0.001)
-
-    #             if set(universe) == set(self.init):
-    #                 newState = self.step(agentId, universe)
-    #                 self.store[t, newState[agentId]["time"]] = newState
-    #                 self.times[agentId] = newState[agentId]["time"]
-                    
-    #             # uni_state = set(universe) == set(self.init)
-    #             # newState = self.step(agentId, universe) if uni_state else None
-    #             # self.store[t, newState[agentId]["time"]] = newState if uni_state else None
-    #             # self.times[agentId] = newState[agentId]["time"] if uni_state else t 
-
-     # --- NEW PARALLEL SIMULATOR ---
     def simulate(self, iterations: int = 500):
-        """Simulate the universe in parallel using a stateless worker function."""
+        """Simulate the universe for a given number of iterations."""
+        agent_ids = list(self.init.keys())
+        agent_keys = set(agent_ids)
+
+        for _ in range(iterations):
+            # Read a consistent snapshot of the previous universe for this step
+            t0 = self.times[agent_ids[0]]
+            universe = self.read(t0 - 0.001)
+
+            if set(universe) != agent_keys:
+                continue
+            
+            # Advance each agent against the same snapshot
+            for agentId in agent_ids:
+                newState = self.step(agentId, universe)
+                new_time = newState[agentId]["time"]
+                self.store[t0, new_time] = newState
+                self.times[agentId] = new_time
         
-        # Pre-cache keys for the worker
-        init_agent_keys = set(self.init.keys())
 
-        with ProcessPoolExecutor() as executor:
+    def simulate_parallel(self, iterations: int = 500, num_workers: int | None = None):
+        """Simulate using a thread pool to avoid process pickling overhead.
+        Threads work well here because the physics kernels are NumPy-based and release the GIL.
+        """
+        agent_ids = list(self.init.keys())
+        agent_keys = set(agent_ids)
+
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
             for _ in range(iterations):
-                
-                # Step 1: Prepare and submit tasks
-                # Map each future to the agentId and time `t` for later updates
-                futures = {}
-                for agentId in self.init:
-                    t = self.times[agentId]
-                    universe = self.read(t - 0.001)
+                # Read a consistent snapshot of the previous universe for this step
+                t0 = self.times[agent_ids[0]]
+                universe = self.read(t0 - 0.001)
 
-                    if set(universe) == init_agent_keys:
-                        # Submit the task to the worker with ONLY the data it needs
-                        future = executor.submit(
-                            run_agent_task,
-                            agentId,
-                            universe,
-                            self.sim_graph[agentId],
-                            init_agent_keys
-                        )
-                        futures[future] = (agentId, t)
-                
-                # Step 2: Collect results and update state sequentially
-                for future in as_completed(futures):
-                    newState = future.result()
-                    if newState:
-                        agentId, t = futures[future]
-                        new_time = newState[agentId]["time"]
-                        
-                        # Update the shared store in the main process
-                        self.store[t, new_time] = newState
-                        self.times[agentId] = new_time
+                if set(universe) != agent_keys:
+                    continue
+
+                # Compute each agent's next state against the same snapshot
+                results = list(pool.map(lambda x: (x, self.step(x, universe)), agent_ids))
+
+                # Commit results atomically
+                for agentId, newState in results:
+                    new_time = newState[agentId]["time"]
+                    self.store[t0, new_time] = newState
+                    self.times[agentId] = new_time
